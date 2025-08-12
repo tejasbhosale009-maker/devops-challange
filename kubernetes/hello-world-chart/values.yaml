@@ -1,0 +1,13 @@
+replicaCount: 1
+
+image:
+  repository: tejasbhosale008/helloworld
+  tag: 165857b
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 3000
+
+env: {}
+
