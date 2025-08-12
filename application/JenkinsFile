@@ -1,0 +1,99 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_CREDENTIALS = '170c321d-afe6-4022-96a2-38f7be5c5ae3'  // Your Jenkins Docker Hub creds ID
+        DOCKERHUB_USERNAME = 'tejasbhosale008'
+    }
+
+    stages {
+        stage('Checkout Terraform Repo') {
+            steps {
+                cleanWs()
+                git branch: 'main', credentialsId: 'gitcloner', url: 'git@github.com:tejasbhosale009-maker/application.git'
+            }
+        }
+        stage('Get Commit Hash') {
+            steps {
+                script {
+                    commitHash = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    echo "Commit hash: ${commitHash}"
+                }
+            }
+        }
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    env.imageTag = "${DOCKERHUB_USERNAME}/helloworld:${commitHash}"
+                    dockerImage = docker.build(env.imageTag)
+                }
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                // Use the stored imageTag string instead of dockerImage.imageName
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${env.imageTag}"
+                
+                archiveArtifacts artifacts: 'trivy-report.json', fingerprint: true
+            }
+            post {
+      always {
+        script {
+          def reportText = readFile("trivy-report.json")
+          def report = readJSON text: reportText
+         }
+      }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry('https://index.docker.io/v1/', DOCKERHUB_CREDENTIALS) {
+                        dockerImage.push()
+                    }
+                }
+            }
+        }
+        stage('Deploy to Dev') {
+            steps {
+                sh """
+                    helm upgrade --install hello-world ./hello-world-chart \
+                    --namespace local \
+                    --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
+                    --set image.tag=${env.imageTag} \
+                    --wait
+                """
+            }
+        }
+        stage('Promote to Staging') {
+            steps {
+                input message: "Deploy to Staging? Approve to continue."
+                sh """
+                    helm upgrade --install hello-world ./hello-world-chart \
+                    --namespace staging \
+                    --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
+                    --set image.tag=${env.imageTag} \
+                    --wait
+                """
+            }
+        }
+
+        stage('Promote to Production') {
+            steps {
+                input message: "Deploy to Production? Approve to continue."
+                sh """
+                    helm upgrade --install hello-world ./hello-world-chart \
+                    --namespace prod \
+                    --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
+                    --set image.tag=${env.imageTag} \
+                    --wait
+                """
+            }
+        }
+
+        }
+    }
+
+
