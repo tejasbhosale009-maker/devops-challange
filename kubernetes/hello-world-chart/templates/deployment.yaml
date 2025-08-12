@@ -23,10 +23,12 @@ spec:
           ports:
             - containerPort: {{ .Values.service.port }}
           env:
-          {{- range $key, $value := .Values.env }}
-            - name: {{ $key }}
-              value: "{{ $value }}"
-          {{- end }}
+            {{- if .Values.env }}
+            {{- range .Values.env }}
+            - name: {{ .name | quote }}
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: {{ .Values.readinessProbe.path | quote }}
