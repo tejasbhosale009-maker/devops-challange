@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent { label 'built-in' }
 
     environment {
         DOCKERHUB_CREDENTIALS = '170c321d-afe6-4022-96a2-38f7be5c5ae3'  // Your Jenkins Docker Hub creds ID
@@ -7,25 +7,31 @@ pipeline {
     }
 
     stages {
-        stage('Checkout Terraform Repo') {
+        stage('Checkout application Repo') {
             steps {
                 cleanWs()
-                git branch: 'main', credentialsId: 'gitcloner', url: 'git@github.com:tejasbhosale009-maker/application.git'
+                git branch: 'main', credentialsId: 'gitcloner', url: 'git@github.com:tejasbhosale009-maker/devops-challange.git'
+                
             }
         }
         stage('Get Commit Hash') {
             steps {
                 script {
-                    commitHash = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.commitHash = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     echo "Commit hash: ${commitHash}"
                 }
+            }
+        }
+        stage ('Get stash kubernets repo to run helm on mac') {
+            steps {
+                stash name: 'kubernetes', includes: 'kubernetes/**'
             }
         }
         stage('Build Docker Image') {
             steps {
                 script {
                     env.imageTag = "${DOCKERHUB_USERNAME}/helloworld:${commitHash}"
-                    dockerImage = docker.build(env.imageTag)
+                    dockerImage = docker.build(env.imageTag, "--no-cache --pull application")
                 }
             }
         }
@@ -33,7 +39,7 @@ pipeline {
         stage('Trivy Scan') {
             steps {
                 // Use the stored imageTag string instead of dockerImage.imageName
-                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${env.imageTag}"
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-report.json ${env.imageTag}"
                 
                 archiveArtifacts artifacts: 'trivy-report.json', fingerprint: true
             }
@@ -57,37 +63,41 @@ pipeline {
             }
         }
         stage('Deploy to Dev') {
+            agent { label 'mac-agent' }
             steps {
+                unstash 'kubernetes'
                 sh """
-                    helm upgrade --install hello-world ./hello-world-chart \
+                    helm upgrade --install hello-world kubernetes/hello-world-chart \
                     --namespace local \
                     --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
-                    --set image.tag=${env.imageTag} \
+                    --set image.tag=${env.commitHash} \
                     --wait
                 """
+                
             }
         }
         stage('Promote to Staging') {
+            agent { label 'mac-agent' }
             steps {
-                input message: "Deploy to Staging? Approve to continue."
                 sh """
-                    helm upgrade --install hello-world ./hello-world-chart \
-                    --namespace staging \
+                    helm upgrade --install hello-world ./kubernetes/hello-world-chart \
+                    --namespace stag \
                     --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
-                    --set image.tag=${env.imageTag} \
+                    --set image.tag=${env.commitHash} \
                     --wait
                 """
             }
         }
 
         stage('Promote to Production') {
+            agent { label 'mac-agent' }
             steps {
                 input message: "Deploy to Production? Approve to continue."
                 sh """
-                    helm upgrade --install hello-world ./hello-world-chart \
+                    helm upgrade --install hello-world ../kubernetes/hello-world-chart \
                     --namespace prod \
                     --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
-                    --set image.tag=${env.imageTag} \
+                    --set image.tag=${env.commitHash} \
                     --wait
                 """
             }
