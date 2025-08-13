@@ -1,0 +1,69 @@
+
+pipeline {
+    agent { label 'built-in' }
+
+    environment {
+        TF_VERSION = '1.9.6'
+         // folder inside repo with .tf files
+    }
+    parameters {
+      choice(name: 'ENV', choices: ['local', 'staging', 'prod'], description: 'Select environment')
+    }
+    stages {
+        
+        stage('Add SSH Known Hosts') {
+          steps {
+    sh 'mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts'
+           }
+        }
+
+        stage('Checkout Terraform Repo') {
+            steps {
+                git branch: 'main', credentialsId: 'gitcloner', url: 'git@github.com:tejasbhosale009-maker/terraform.git'
+            }
+        }
+
+
+        stage('Terraform Format Check') {
+          steps {
+            script {
+              def result = sh(script: 'terraform fmt -diff -recursive -check', returnStatus: true)
+                if (result != 0) {
+                error('Terraform fmt check failed - please format your files!')
+                }
+            }
+          }
+        }
+
+
+        stage('Terraform Validate') {
+            steps {
+                
+                    sh 'terraform init -backend=false'
+                    sh 'terraform validate'
+                
+            }
+        }
+
+        stage('Lint with TFLint') {
+            steps {
+                
+                    sh 'tflint --recursive || true'
+                
+            }
+        }
+
+        stage('TFSEC Scan') {
+          steps {
+            sh 'tfsec --format sarif --verbose --out tfsec-report.sarif .'
+            
+          }
+        }
+        stage('Publish SARIF Report') {
+            steps {
+                recordIssues tools: [sarif(pattern: 'tfsec-report.sarif')]
+            }
+        }
+}
+}
+
