@@ -25,3 +25,17 @@ autoscaling:
   targetCPUUtilizationPercentage: 50
   targetMemoryUtilizationPercentage: 80 # Optional
 
+ingress:
+  enabled: false
+  className: ""  # Optional: e.g., "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: hello-minikube-stag.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hello-minikube-tls
+      hosts:
+        - hello-minikube.local
