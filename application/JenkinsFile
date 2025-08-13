@@ -1,24 +1,75 @@
 pipeline {
     agent { label 'built-in' }
 
+    parameters {
+        booleanParam(name: 'ROLLBACK', defaultValue: false, description: 'Check to perform rollback')
+        string(name: 'ROLLBACK_TAG', defaultValue: '', description: 'Enter Docker tag to rollback')
+        choice(name: 'ROLLBACK_ENV', choices: ['dev', 'stag', 'prod'], description: 'Environment to rollback')
+    }
     environment {
         DOCKERHUB_CREDENTIALS = '170c321d-afe6-4022-96a2-38f7be5c5ae3'  // Your Jenkins Docker Hub creds ID
-        DOCKERHUB_USERNAME = 'tejasbhosale008'
+        DOCKERHUB_USERNAME = 'tejasbhosale008'    
     }
 
     stages {
+        stage('Rollback') {
+            when { expression { return params.ROLLBACK } }
+            agent { label 'mac-agent' }
+            steps {
+                script {
+                    def envToRollback = params.ROLLBACK_ENV
+                    def rollbackTag = params.ROLLBACK_TAG?.trim()
+                    
+
+                    // Use last successful tag if none provided
+                    if (!rollbackTag) {
+                        def lastTagFile = "last_successful_tag_${envToRollback}.txt"
+                        if (fileExists(lastTagFile)) {
+                            rollbackTag = readFile(lastTagFile).trim()
+                        } else {
+                            error("No previous successful tag found for environment ${envToRollback}")
+                        }
+                    }
+
+                    echo "Rolling back ${envToRollback} to tag: ${rollbackTag} (namespace: ${envToRollback})"
+                    sh """
+                        helm upgrade --install hello-world ./kubernetes/hello-world-chart \
+                        -f ./kubernetes/hello-world-chart/values.yaml \
+                        -f ./kubernetes/hello-world-chart/values-${envToRollback}.yaml \
+                        --namespace ${envToRollback} \
+                        --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
+                        --set image.tag=${rollbackTag} \
+                        --wait
+                    """
+                    echo "Skipping all other stages"
+
+            // Abort pipeline without failing
+            catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                currentBuild.description = "Rollback performed, skipping remaining stages"
+                error("Aborting pipeline after rollback")
+                }
+            }
+        }
+        }
         stage('Checkout application Repo') {
             steps {
-                cleanWs()
+                
                 git branch: 'main', credentialsId: 'gitcloner', url: 'git@github.com:tejasbhosale009-maker/devops-challange.git'
                 
             }
         }
-        stage('Get Commit Hash') {
+        stage('Get Commit Hash and Build Tag') {
             steps {
                 script {
-                    env.commitHash = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    echo "Commit hash: ${commitHash}"
+                    def commitHash = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    def currentTag = "build-${env.BUILD_NUMBER}-${commitHash}"
+                    echo "Build tag: ${currentTag}"
+
+                    // Save to environment so other steps can use if needed
+                    env.CURRENT_TAG = currentTag
+
+                    
+
                 }
             }
         }
@@ -30,26 +81,33 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    env.imageTag = "${DOCKERHUB_USERNAME}/helloworld:${commitHash}"
-                    dockerImage = docker.build(env.imageTag, "--no-cache --pull application")
+                    def imageTag = "${DOCKERHUB_USERNAME}/helloworld:${env.CURRENT_TAG}"
+                    echo "Building Docker image: ${imageTag}"
+                    dockerImage = docker.build(imageTag, "--no-cache --pull application")
+                    env.imageTag = imageTag // if needed later
                 }
             }
         }
 
-        stage('Trivy Scan') {
+        stage('Trivy Scan for docker images') {
             steps {
                 // Use the stored imageTag string instead of dockerImage.imageName
-                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-report.json ${env.imageTag}"
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format sarif -o trivy-report.sarif ${DOCKERHUB_USERNAME}/helloworld:${env.CURRENT_TAG}"
                 
-                archiveArtifacts artifacts: 'trivy-report.json', fingerprint: true
+                }
             }
-            post {
-      always {
-        script {
-          def reportText = readFile("trivy-report.json")
-          def report = readJSON text: reportText
-         }
-      }
+            /*
+        stage('Trivy Scan for Dockerfile , k8 security rules') {
+            steps {
+                // Use the stored imageTag string instead of dockerImage.imageName
+                sh "trivy config --exit-code 1 --severity HIGH,CRITICAL --format sarif -o trivy-security.sarif ."
+                
+                }
+            }
+            */
+        stage('Publish SARIF Report') {
+            steps {
+                recordIssues tools: [sarif(pattern: 'trivy-report.sarif')]
             }
         }
 
@@ -65,45 +123,100 @@ pipeline {
         stage('Deploy to Dev') {
             agent { label 'mac-agent' }
             steps {
+                script {
+                env.CURRENT_ENV = 'dev'
                 unstash 'kubernetes'
+                
                 sh """
                     helm upgrade --install hello-world kubernetes/hello-world-chart \
-                    --namespace local \
+                    -f ./kubernetes/hello-world-chart/values.yaml \
+                    -f ./kubernetes/hello-world-chart/values-dev.yaml \
+                    --namespace dev \
                     --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
-                    --set image.tag=${env.commitHash} \
+                    --set image.tag=${env.CURRENT_TAG} \
                     --wait
                 """
-                
+                def lastTagFile = "last_successful_tag_${env.CURRENT_ENV}.txt"
+                writeFile file: lastTagFile, text: env.CURRENT_TAG
+                archiveArtifacts artifacts: lastTagFile, fingerprint: true
+                }
             }
         }
-        stage('Promote to Staging') {
+        stage('Deploy to Staging') {
             agent { label 'mac-agent' }
             steps {
+                script {
+                env.CURRENT_ENV = 'stag'
+                
                 sh """
                     helm upgrade --install hello-world ./kubernetes/hello-world-chart \
+                    -f ./kubernetes/hello-world-chart/values.yaml \
+                    -f ./kubernetes/hello-world-chart/values-stag.yaml \
                     --namespace stag \
                     --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
-                    --set image.tag=${env.commitHash} \
+                    --set image.tag=${env.CURRENT_TAG} \
                     --wait
                 """
+                def lastTagFile = "last_successful_tag_${env.CURRENT_ENV}.txt"
+                writeFile file: lastTagFile, text: env.CURRENT_TAG
+                archiveArtifacts artifacts: lastTagFile, fingerprint: true
+                }
             }
         }
-
         stage('Promote to Production') {
             agent { label 'mac-agent' }
             steps {
-                input message: "Deploy to Production? Approve to continue."
+                script {
+                env.CURRENT_ENV = 'prod'
+                boolean proceedToDeploy = false
+                    try {
+                    input message: "Deploy to Production? Approve to continue."
+                    proceedToDeploy = true
+                    } catch(err) {
+                    echo "Deployment to Production was NOT approved: ${err}"
+                    proceedToDeploy = false
+                }
+                if (proceedToDeploy) {
                 sh """
-                    helm upgrade --install hello-world ../kubernetes/hello-world-chart \
+                    helm upgrade --install hello-world ./kubernetes/hello-world-chart \
+                    -f ./kubernetes/hello-world-chart/values.yaml \
+                    -f ./kubernetes/hello-world-chart/values-prod.yaml \
                     --namespace prod \
                     --set image.repository=${DOCKERHUB_USERNAME}/helloworld \
-                    --set image.tag=${env.commitHash} \
+                    --set image.tag=${env.CURRENT_TAG} \
                     --wait
                 """
+                } else {
+                echo "Skipping deployment to production."
+                } 
+                def lastTagFile = "last_successful_tag_${env.CURRENT_ENV}.txt"
+                writeFile file: lastTagFile, text: env.CURRENT_TAG
+                archiveArtifacts artifacts: lastTagFile, fingerprint: true
+                }
             }
         }
+        /*
+        stage('Run Test Deployment') {
+        agent { label 'mac-agent' }
+            steps {
+                catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                script {
+                    echo "Running tests on ${env.CURRENT_ENV}"
+                    def status = sh(
+                        script: "curl --fail --silent --show-error http://127.0.0.1:8001",
+                    returnStatus: true
+                    )
+                    if (status != 0) {
+                        error("Health check failed")
+                    }
+                }
+                }
+            }
+        }
+        */
+        
+
 
         }
+        
     }
-
-
