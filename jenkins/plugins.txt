@@ -1,0 +1,16 @@
+workflow-aggregator
+git
+credentials
+ssh-agent
+pipeline-stage-view
+pipeline-model-definition
+workflow-aggregator
+pipeline-utility-steps
+git
+ssh-credentials
+credentials-binding
+docker-workflow
+docker-commons
+copyartifact
+warnings-ng
+sarif-parser
