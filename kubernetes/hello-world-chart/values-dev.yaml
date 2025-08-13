@@ -1,4 +1,4 @@
-replicaCount: 3
+replicaCount: 1
 
 image:
   repository: tejasbhosale008/helloworld
@@ -7,6 +7,8 @@ image:
 env:
   - name: LOG_LEVEL
     value: ERROR
+  - name: APP_ENV
+    value: dev
 
 resources:
   requests:
@@ -15,4 +17,11 @@ resources:
   limits:
     cpu: 500m
     memory: 512Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 50
+  targetMemoryUtilizationPercentage: 80 # Optional
 
