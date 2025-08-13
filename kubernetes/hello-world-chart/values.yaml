@@ -17,14 +17,14 @@ autoscaling:
   enabled: false
 
 readinessProbe:
-  path: /healthz
+  path: /ready
   port: 3000
   initialDelaySeconds: 5
   periodSeconds: 10
   failureThreshold: 3
 
 livenessProbe:
-  path: /healthz
+  path: /health
   port: 3000
   initialDelaySeconds: 15
   periodSeconds: 20
