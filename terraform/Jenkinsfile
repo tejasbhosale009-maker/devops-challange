@@ -11,15 +11,11 @@ pipeline {
     }
     stages {
         
-        stage('Add SSH Known Hosts') {
-          steps {
-    sh 'mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts'
-           }
-        }
+        
 
         stage('Checkout Terraform Repo') {
             steps {
-                git branch: 'main', credentialsId: 'gitcloner', url: 'git@github.com:tejasbhosale009-maker/terraform.git'
+                git branch: 'main', credentialsId: 'gitcloner', url: 'git@github.com:tejasbhosale009-maker/devops-challange.git'
             }
         }
 
@@ -27,7 +23,7 @@ pipeline {
         stage('Terraform Format Check') {
           steps {
             script {
-              def result = sh(script: 'terraform fmt -diff -recursive -check', returnStatus: true)
+              def result = sh(script: 'terraform fmt -write=false -diff -recursive -check terraform/', returnStatus: true)
                 if (result != 0) {
                 error('Terraform fmt check failed - please format your files!')
                 }
@@ -38,24 +34,19 @@ pipeline {
 
         stage('Terraform Validate') {
             steps {
-                
-                    sh 'terraform init -backend=false'
-                    sh 'terraform validate'
+                sh '''
+        terraform -chdir=terraform init -backend=false
+        terraform -chdir=terraform validate
+        '''
                 
             }
         }
 
-        stage('Lint with TFLint') {
-            steps {
-                
-                    sh 'tflint --recursive || true'
-                
-            }
-        }
+        
 
         stage('TFSEC Scan') {
           steps {
-            sh 'tfsec --format sarif --verbose --out tfsec-report.sarif .'
+            sh 'tfsec --custom-check-dir ./security/scans/tfsec-policies --format sarif --verbose --out tfsec-report.sarif terraform'
             
           }
         }
@@ -64,6 +55,14 @@ pipeline {
                 recordIssues tools: [sarif(pattern: 'tfsec-report.sarif')]
             }
         }
+        /*
+          stage('TFLint') {
+      steps {
+        sh 'tflint --init --chdir=terraform'
+        sh 'tflint --chdir=terraform --recursive'
+      }
+    }
+    */
 }
 }
 
